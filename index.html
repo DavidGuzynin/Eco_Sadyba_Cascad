@@ -320,6 +320,7 @@
       padding: 8px;
       border-radius: 8px;
       margin-bottom: 6px;
+      white-space: pre-wrap;
     }
     #chatMessages .msg.from-bot {
       align-self: flex-end;
@@ -329,6 +330,7 @@
       padding: 8px;
       border-radius: 8px;
       margin-bottom: 6px;
+      white-space: pre-wrap;
     }
     .chat-input {
       display: flex;
@@ -342,6 +344,7 @@
       font-size: 1rem;
       height: 40px;
       box-sizing: border-box;
+      outline: none;
     }
     .chat-input button {
       background: none;
@@ -387,18 +390,18 @@
   <main id="app"></main>
 
   <!-- Chat Toggle & Overlays -->
-  <div id="chatToggle">💬</div>
+  <div id="chatToggle" title="Відкрити чат">💬</div>
   <div id="namePrompt">
     <div>Щоб скористатися чатом, введіть ваше ім’я 👇</div>
     <input type="text" id="userNameInput" placeholder="Ваше ім’я…"/>
-    <button onclick="submitName()">Продовжити</button>
+    <button id="continueBtn">Продовжити</button>
   </div>
   <div id="chatOverlay">
     <div id="chatHeader">Сервісний чат</div>
     <div id="chatMessages"></div>
     <div class="chat-input">
       <textarea id="userMessage" rows="1" placeholder="Питання сервісу…"></textarea>
-      <button id="sendBtn" aria-label="Надіслати">
+      <button id="sendBtn" aria-label="Надіслати" title="Надіслати">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
           <path d="M2 21l21-9L2 3v7l15 2-15 2z"/>
         </svg>
@@ -406,7 +409,7 @@
     </div>
     <div class="powered-by">
       🤖 Сервісний чат працює завдяки
-      <a href="https://t.me/EcoSadybaBot" target="_blank">EcoSadybaBot</a>
+      <a href="https://t.me/EcoSadybaBot" target="_blank" rel="noopener">EcoSadybaBot</a>
     </div>
   </div>
 
@@ -612,70 +615,210 @@
       render(location.hash.replace('#',''));
     });
 
-    // Chat integration (unchanged)
-    const BOT_TOKEN = '7555943126:AAGXkpf5M_pW1MXGa6o5R-Sz84DsUTt2y_M';
-    const CHAT_ID   = '627731263';
-    const API_BASE  = `https://api.telegram.org/bot${BOT_TOKEN}`;
-    let userName = '';
+    // -----------------------
+    // Chat integration (enhanced)
+    // -----------------------
 
-    document.getElementById('chatToggle').onclick = () => {
+    // IMPORTANT:
+    // - Uses your provided token immediately (no /start required).
+    // - Also attempts admin chat auto-discovery and caches it for next visits.
+
+    // Your existing bot token (works out of the box). For better security,
+    // you can later switch to AES-encrypted storage.
+    const BOT_TOKEN = '7555943126:AAGXkpf5M_pW1MXGa6o5R-Sz84DsUTt2y_M';
+
+    // Optional hardcoded fallback admin chat ID (yours). Kept to avoid any /start step.
+    const FALLBACK_CHAT_ID = '627731263';
+
+    const API_BASE  = `https://api.telegram.org/bot${BOT_TOKEN}`;
+
+    let userName = '';
+    let adminChatId = null;
+    let offset = Number(localStorage.getItem('tg_update_offset') || 0);
+    let botReady = false;
+
+    const els = {
+      toggle: document.getElementById('chatToggle'),
+      namePrompt: document.getElementById('namePrompt'),
+      continueBtn: document.getElementById('continueBtn'),
+      overlay: document.getElementById('chatOverlay'),
+      messages: document.getElementById('chatMessages'),
+      textarea: document.getElementById('userMessage'),
+      send: document.getElementById('sendBtn'),
+      nameInput: document.getElementById('userNameInput')
+    };
+
+    // UI: toggle
+    els.toggle.onclick = () => {
       if (!userName) {
-        const np = document.getElementById('namePrompt');
-        np.style.display = np.style.display==='flex'?'none':'flex';
+        els.namePrompt.style.display = els.namePrompt.style.display==='flex' ? 'none' : 'flex';
+        if (els.namePrompt.style.display === 'flex') {
+          els.nameInput.focus();
+        }
       } else {
-        const ch = document.getElementById('chatOverlay');
-        ch.style.display = ch.style.display==='flex'?'none':'flex';
+        els.overlay.style.display = els.overlay.style.display==='flex' ? 'none' : 'flex';
+        if (els.overlay.style.display === 'flex') {
+          els.textarea.focus();
+        }
       }
     };
 
+    // Enter to send, Shift+Enter for newline
+    els.textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        els.send.click();
+      }
+    });
+
+    // Continue after name
+    els.continueBtn.addEventListener('click', submitName);
+    els.nameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submitName();
+    });
+
     function submitName() {
-      const val = document.getElementById('userNameInput').value.trim();
+      const val = els.nameInput.value.trim();
       if (!val) return;
       userName = val;
-      document.getElementById('namePrompt').style.display = 'none';
-      document.getElementById('chatOverlay').style.display = 'flex';
+      localStorage.setItem('visitor_name', userName);
+      els.namePrompt.style.display = 'none';
+      els.overlay.style.display = 'flex';
+      ensureBotReady().then(() => {
+        addMessage('Вітаємо! Як можу допомогти?', 'bot');
+        // Optional: notify admin that a visitor joined
+        safeSend(`Новий відвідувач приєднався: ${userName}`);
+      });
     }
+
+    // Restore previous name if present
+    (function restoreName() {
+      const saved = localStorage.getItem('visitor_name');
+      if (saved) {
+        userName = saved;
+      }
+    })();
 
     function addMessage(text, from) {
       const div = document.createElement('div');
-      div.className = 'msg ' + (from==='user'?'from-user':'from-bot');
+      div.className = 'msg ' + (from==='user' ? 'from-user' : 'from-bot');
       div.textContent = text;
-      document.getElementById('chatMessages').append(div);
+      els.messages.append(div);
       div.scrollIntoView({behavior:'smooth', block:'end'});
     }
 
-    document.getElementById('sendBtn').onclick = async () => {
-      const txt = document.getElementById('userMessage').value.trim();
+    els.send.onclick = async () => {
+      const txt = els.textarea.value.trim();
       if (!txt) return;
+      if (!botReady) {
+        addMessage('⏳ Будь ласка, зачекайте… з’єднання з сервісом.', 'bot');
+        return;
+      }
       addMessage(txt, 'user');
-      document.getElementById('userMessage').value = '';
+      els.textarea.value = '';
+      await safeSend(`💬 ${userName}: ${txt}`);
+    };
+
+    // Ensure bot is ready: discover or restore admin chat id, then start polling
+    async function ensureBotReady() {
+      if (botReady) return true;
+
+      // 1) Try restore from cache
+      const cached = localStorage.getItem('tg_admin_chat_id');
+      if (cached) {
+        adminChatId = cached;
+      } else {
+        // 2) Try discovery via getUpdates
+        adminChatId = await discoverAdminChatId().catch(() => null);
+        // 3) Fallback to provided ID to avoid any /start step
+        if (!adminChatId) adminChatId = FALLBACK_CHAT_ID;
+        localStorage.setItem('tg_admin_chat_id', adminChatId);
+      }
+      botReady = true;
+      startPolling();
+      return true;
+    }
+
+    async function safeSend(text) {
       try {
         await fetch(`${API_BASE}/sendMessage`, {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({chat_id:CHAT_ID, text:`${userName}: ${txt}`})
+          body: JSON.stringify({ chat_id: adminChatId, text })
         });
-      } catch(e){ console.warn(e) }
-    };
+      } catch (e) {
+        console.warn('sendMessage failed', e);
+        addMessage('⚠️ Помилка надсилання. Спробуйте ще раз.', 'bot');
+      }
+    }
 
-    let offset = 0;
-    async function pollUpdates() {
+    async function discoverAdminChatId() {
       try {
-        const res = await fetch(`${API_BASE}/getUpdates?offset=${offset}&timeout=0`);
+        // small window of updates is enough
+        const res = await fetch(`${API_BASE}/getUpdates?limit=50`);
         const json = await res.json();
-        if (json.ok) {
-          json.result.forEach(up => {
-            offset = up.update_id + 1;
-            const msg = up.message;
-            if (msg.chat.id==CHAT_ID && msg.text && !msg.from.is_bot) {
+        if (!json.ok) throw new Error('TG error');
+        const updates = json.result || [];
+        // Prefer the latest private chat message from a human
+        for (let i = updates.length - 1; i >= 0; i--) {
+          const up = updates[i];
+          const msg = up.message || up.edited_message;
+          if (!msg) continue;
+          if (msg.chat && msg.chat.type === 'private' && msg.from && !msg.from.is_bot) {
+            // Update global offset progression
+            offset = Math.max(offset, (up.update_id || 0) + 1);
+            return String(msg.chat.id);
+          }
+        }
+        return null;
+      } catch (e) {
+        console.warn('discoverAdminChatId failed', e);
+        return null;
+      }
+    }
+
+    function startPolling() {
+      // Avoid duplicate loops
+      if (startPolling._started) return;
+      startPolling._started = true;
+      pollLoop();
+    }
+
+    async function pollLoop() {
+      try {
+        const url = `${API_BASE}/getUpdates?timeout=20&offset=${offset}`;
+        const res = await fetch(url);
+        const json = await res.json();
+        if (json.ok && Array.isArray(json.result)) {
+          for (const up of json.result) {
+            offset = Math.max(offset, (up.update_id || 0) + 1);
+            const msg = up.message || up.edited_message;
+            if (!msg) continue;
+            // Only show messages from admin chat back to the site chat
+            if (String(msg.chat.id) === String(adminChatId) && msg.text && (!msg.from || msg.from.is_bot === false)) {
               addMessage(msg.text, 'bot');
             }
-          });
+          }
+          localStorage.setItem('tg_update_offset', String(offset));
         }
-      } catch(e) { console.warn(e) }
-      setTimeout(pollUpdates, 3000);
+      } catch (e) {
+        console.warn('pollLoop error', e);
+        // soft backoff
+        await new Promise(r => setTimeout(r, 1500));
+      } finally {
+        setTimeout(pollLoop, 2000);
+      }
     }
-    pollUpdates();
+
+    // Open chat right away if name already known
+    window.addEventListener('load', () => {
+      if (userName) {
+        els.overlay.style.display = 'flex';
+        ensureBotReady().then(() => {
+          addMessage('Повернулися? Чим можу ще допомогти?', 'bot');
+        });
+      }
+    });
   </script>
 </body>
 </html>
